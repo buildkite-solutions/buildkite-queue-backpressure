@@ -22,7 +22,7 @@
 #   MAX_VCPU           vCPU budget across the whole org (default 20)
 #   PEAK_UTIL          Utilization at or above which builds get MIN_SHARDS (default 0.7)
 #   MIN_SHARDS         Fewest shards to run (default 1)
-#   MAX_SHARDS         Most shards to run (default 8)
+#   MAX_SHARDS         Most shards to run (default 5)
 #   VCPU_OVERRIDES     vCPU for self-hosted queues, "key:vcpu key:vcpu ..." (default none: skipped)
 #   POLL_SECONDS       Seconds between polls while waiting for MIN_SHARDS to fit (default 15)
 set -uo pipefail
@@ -30,7 +30,7 @@ set -uo pipefail
 MAX_VCPU="${MAX_VCPU:-20}"
 PEAK_UTIL="${PEAK_UTIL:-0.7}"
 MIN_SHARDS="${MIN_SHARDS:-1}"
-MAX_SHARDS="${MAX_SHARDS:-8}"
+MAX_SHARDS="${MAX_SHARDS:-5}"
 VCPU_OVERRIDES="${VCPU_OVERRIDES:-}"
 POLL_SECONDS="${POLL_SECONDS:-15}"
 CHUNK=20   # queues per GraphQL count query

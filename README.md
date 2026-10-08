@@ -201,7 +201,7 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 | `MAX_VCPU` | C | `20` | vCPU budget across every counted queue in the org |
 | `PEAK_UTIL` | C | `0.7` | At or above this utilization (`in-flight vCPU / MAX_VCPU`), builds get `MIN_SHARDS` |
 | `MIN_SHARDS` | C | `1` | Fewest shards a build runs. If not even this fits, the planner waits |
-| `MAX_SHARDS` | C | `5` in the example pipeline (`8` in the script) | Most shards a build runs. With `MAX_VCPU=20` and 2 vCPU shards, an idle org fits 10, and half of that is 5 |
+| `MAX_SHARDS` | C | `5` | Most shards a build runs. With `MAX_VCPU=20` and 2 vCPU shards, an idle org fits 10, and half of that is 5 |
 | `TARGET_QUEUE_KEY` | C | `hosted_backpressure` | Queue the shards run on; its vCPU sizes each shard |
 | `VCPU_OVERRIDES` | C | empty | vCPU of self-hosted queues to count, as `"key:vcpu key:vcpu"`. Unlisted self-hosted queues are skipped |
 | `BK_ORG_SLUG`, `BK_CLUSTER_ID` | A, B, C | example values | Your org and cluster (see [Setup](#setup)) |
