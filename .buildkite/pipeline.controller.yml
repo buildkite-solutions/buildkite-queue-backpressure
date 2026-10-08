@@ -5,7 +5,7 @@
 env:
   BK_ORG_SLUG: "buildkite-solutions"
   BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
-  BK_QUEUE_ID: "Q2x1c3RlclF1ZXVlLS0tN2JiN2NiMWMtMjcwYi00NTQ4LThiZjMtMDA2ZGU0NDBkYTFm"  # kube_local
+  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tN2JiN2NiMWMtMjcwYi00NTQ4LThiZjMtMDA2ZGU0NDBkYTFm}"  # kube_local
   TARGET_PIPELINES: "kube-local-block-gated-demo"   # space-separated pipeline slugs to manage
   MAX_RUNNING: "${MAX_RUNNING:-10}"
   JOBS_PER_BUILD: "2"

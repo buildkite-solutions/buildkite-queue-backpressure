@@ -134,7 +134,8 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 | `POLL_SECONDS` | A, B | `15` (A), `10` (B) | Seconds between checks |
 | `TARGET_PIPELINES` | B | demo slug | Space-separated slugs of pipelines whose blocked builds the controller manages |
 | `RUN_MINUTES` | B | `30` | How long one controller build runs |
-| `BK_ORG_SLUG`, `BK_CLUSTER_ID`, `BK_QUEUE_ID` | A, B | demo values | Your org and target queue (see [Setup](#setup)) |
+| `BK_ORG_SLUG`, `BK_CLUSTER_ID` | A, B | demo values | Your org and cluster (see [Setup](#setup)) |
+| `BK_QUEUE_ID` | A, B | demo value | Target queue GraphQL ID; can be overridden per build to watch a different queue |
 
 ## Behavior details
 
