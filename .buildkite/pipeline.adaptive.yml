@@ -1,16 +1,16 @@
 # C. Adaptive parallelism: instead of waiting, pick how many test shards to run
-# from free vCPU on the target queue right now, then upload a parallel test step.
-# Requires Buildkite secret GRAPHQL_API_TOKEN (API token with GraphQL access).
+# from free vCPU across the whole org right now, then upload a parallel test step.
+# Requires Buildkite secret GRAPHQL_API_TOKEN (API token with GraphQL access, read_clusters, read_builds).
 
 env:
   BK_ORG_SLUG: "buildkite-solutions"
-  BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
-  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tZjAyNjlhMmMtM2ZhYi00YzQ0LWFiMzItNzBkYmI1ZDcyNTQ5}"  # hosted_backpressure
-  TARGET_QUEUE_KEY: "hosted_backpressure"
-  QUEUE_VCPU: "${QUEUE_VCPU:-4}"
-  MAX_VCPU: "${MAX_VCPU:-40}"
+  BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # cluster this pipeline runs in
+  TARGET_QUEUE_KEY: "${TARGET_QUEUE_KEY:-hosted_backpressure}"   # 2 vCPU hosted Linux queue
+  MAX_VCPU: "${MAX_VCPU:-20}"          # org-wide vCPU budget
+  PEAK_UTIL: "${PEAK_UTIL:-0.7}"       # at or above this utilization, builds get MIN_SHARDS
   MIN_SHARDS: "${MIN_SHARDS:-1}"
-  MAX_SHARDS: "${MAX_SHARDS:-8}"
+  MAX_SHARDS: "${MAX_SHARDS:-5}"       # 20 vCPU / 2 vCPU = 10 shards fit; FIT/2 = 5 on an idle org
+  VCPU_OVERRIDES: "${VCPU_OVERRIDES:-}"   # self-hosted queues to count, e.g. "linux-large:16 kube_local:4"
   POLL_SECONDS: "${POLL_SECONDS:-15}"
 
 steps:
