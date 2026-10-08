@@ -1,11 +1,11 @@
-# Capacity controller: watches kube_local and unblocks block-gated builds
+# Capacity controller: watches hosted_backpressure and unblocks block-gated builds
 # (oldest first) while in-flight + JOBS_PER_BUILD <= MAX_RUNNING.
 # Requires Buildkite secret GRAPHQL_API_TOKEN with GraphQL access, read_builds and write_builds.
 
 env:
   BK_ORG_SLUG: "buildkite-solutions"
   BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
-  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tN2JiN2NiMWMtMjcwYi00NTQ4LThiZjMtMDA2ZGU0NDBkYTFm}"  # kube_local
+  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tZjAyNjlhMmMtM2ZhYi00YzQ0LWFiMzItNzBkYmI1ZDcyNTQ5}"  # hosted_backpressure
   TARGET_PIPELINES: "kube-local-block-gated-demo"   # space-separated pipeline slugs to manage
   MAX_RUNNING: "${MAX_RUNNING:-10}"
   JOBS_PER_BUILD: "2"
@@ -13,9 +13,9 @@ env:
   RUN_MINUTES: "${RUN_MINUTES:-30}"
 
 steps:
-  - label: ":control_knobs: kube_local capacity controller"
+  - label: ":control_knobs: hosted_backpressure capacity controller"
     # Only one controller may run, or two could hand out the same capacity.
-    concurrency_group: "kube-local-capacity-controller"
+    concurrency_group: "back-pressure-capacity-controller"
     concurrency: 1
     secrets:
       - GRAPHQL_API_TOKEN

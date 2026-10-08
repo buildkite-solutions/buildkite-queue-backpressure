@@ -1,33 +1,33 @@
-# Back-pressure demo: hold the build until kube_local has room for its jobs under MAX_RUNNING.
+# Back-pressure demo: hold the build until hosted_backpressure has room for its jobs under MAX_RUNNING.
 # Cluster: Golden Gate Cluster. The gate runs on the cluster default queue (hosted_linux_small).
 # Requires Buildkite secret GRAPHQL_API_TOKEN (API token with GraphQL access).
 
 env:
   BK_ORG_SLUG: "buildkite-solutions"
   BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
-  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tN2JiN2NiMWMtMjcwYi00NTQ4LThiZjMtMDA2ZGU0NDBkYTFm}"  # kube_local
+  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tZjAyNjlhMmMtM2ZhYi00YzQ0LWFiMzItNzBkYmI1ZDcyNTQ5}"  # hosted_backpressure
   MAX_RUNNING: "${MAX_RUNNING:-10}"    # override per build, e.g. MAX_RUNNING=2
-  JOBS_PER_BUILD: "2"                     # work jobs below that land on kube_local
+  JOBS_PER_BUILD: "2"                     # work jobs below that land on hosted_backpressure
   POLL_SECONDS: "${POLL_SECONDS:-15}"
 
 steps:
-  - label: ":traffic_light: Gate: wait for kube_local capacity"
+  - label: ":traffic_light: Gate: wait for hosted_backpressure capacity"
     key: gate
     # One gate checks at a time, org-wide, so released builds are counted before the next check.
-    concurrency_group: "kube-local-back-pressure-gate"
+    concurrency_group: "back-pressure-gate"
     concurrency: 1
     secrets:
       - GRAPHQL_API_TOKEN
     command: .buildkite/scripts/gate.sh
 
-  - label: ":kubernetes: Work job 1"
+  - label: ":cloud: Work job 1"
     depends_on: gate
     agents:
-      queue: kube_local
+      queue: hosted_backpressure
     command: sleep 60
 
-  - label: ":kubernetes: Work job 2"
+  - label: ":cloud: Work job 2"
     depends_on: gate
     agents:
-      queue: kube_local
+      queue: hosted_backpressure
     command: sleep 60

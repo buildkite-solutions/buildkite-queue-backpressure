@@ -96,7 +96,7 @@ env:
   BK_QUEUE_ID: "<target queue graphql_id>"
 ```
 
-Then replace `queue: kube_local` in the work steps (`pipeline.yml`, `pipeline.block.yml`) with your target queue's key.
+Then replace `queue: hosted_backpressure` in the work steps (`pipeline.yml`, `pipeline.block.yml`) with your target queue's key.
 
 ### 3a. Approach A: polling gate
 

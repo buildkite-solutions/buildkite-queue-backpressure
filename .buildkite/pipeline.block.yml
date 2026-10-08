@@ -1,20 +1,20 @@
 # Block-gated variant: each build starts parked on a block step.
 # The capacity controller pipeline (pipeline.controller.yml) unblocks builds
-# oldest-first while kube_local has room under its cap.
+# oldest-first while hosted_backpressure has room under its cap.
 
 steps:
-  - block: ":vertical_traffic_light: Waiting for kube_local capacity"
+  - block: ":vertical_traffic_light: Waiting for hosted_backpressure capacity"
     key: capacity-gate
-    prompt: "Unblocked automatically by the kube_local capacity controller. Unblock by hand to skip the queue."
+    prompt: "Unblocked automatically by the hosted_backpressure capacity controller. Unblock by hand to skip the queue."
 
-  - label: ":kubernetes: Work job 1"
+  - label: ":cloud: Work job 1"
     depends_on: capacity-gate
     agents:
-      queue: kube_local
+      queue: hosted_backpressure
     command: sleep 60
 
-  - label: ":kubernetes: Work job 2"
+  - label: ":cloud: Work job 2"
     depends_on: capacity-gate
     agents:
-      queue: kube_local
+      queue: hosted_backpressure
     command: sleep 60

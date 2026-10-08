@@ -61,7 +61,7 @@ while true; do
   if (( INFLIGHT + NEED <= MAX_RUNNING )); then
     echo "Capacity available, releasing build."
     buildkite-agent annotate --style success --context gate \
-      "Gate released at $(date -u +%T) UTC: **$INFLIGHT** in-flight on kube_local + $JOBS_PER_BUILD from this build (limit $MAX_RUNNING)." 2>/dev/null || true
+      "Gate released at $(date -u +%T) UTC: **$INFLIGHT** in-flight on the target queue + $JOBS_PER_BUILD from this build (limit $MAX_RUNNING)." 2>/dev/null || true
     break
   fi
   echo "At capacity, waiting ${POLL_SECONDS}s..."

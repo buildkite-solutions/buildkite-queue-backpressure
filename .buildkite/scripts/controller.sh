@@ -106,4 +106,4 @@ done
 
 echo "Run window over. Unblocked $UNBLOCKED_TOTAL build(s)."
 buildkite-agent annotate --style info --context controller \
-  "Capacity controller ran ${RUN_MINUTES}m and unblocked **$UNBLOCKED_TOTAL** build(s) (limit $MAX_RUNNING in-flight on kube_local)." 2>/dev/null || true
+  "Capacity controller ran ${RUN_MINUTES}m and unblocked **$UNBLOCKED_TOTAL** build(s) (limit $MAX_RUNNING in-flight on the target queue)." 2>/dev/null || true
