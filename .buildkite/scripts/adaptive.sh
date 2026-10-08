@@ -99,6 +99,10 @@ if [[ -z "$TARGET_VCPU" ]]; then
 fi
 echo "Target queue $TARGET_QUEUE_KEY: $TARGET_VCPU vCPU per shard."
 
+# The queue this planner job runs on, so its own job isn't counted as load.
+SELF_QUEUE="${BUILDKITE_AGENT_META_DATA_QUEUE:-}"
+[[ -n $SELF_QUEUE ]] && echo "Excluding this planner job (queue $SELF_QUEUE) from the count."
+
 # ---- 2. Poll job counts until at least MIN_SHARDS fit ------------------------------------------
 # Prints "index running queued" per counted queue, or fails on API error.
 poll_counts() {
@@ -120,9 +124,12 @@ poll_counts() {
 while :; do
   if ! poll_counts > "$WORK/counts.txt"; then echo "Retrying in ${POLL_SECONDS}s..."; sleep "$POLL_SECONDS"; continue; fi
 
-  # Join counts onto the cached queue table: cluster key vcpu running queued vcpu_used
-  awk -F'\t' 'NR==FNR { split($0, c, " "); run[c[1]]=c[2]; que[c[1]]=c[3]; next }
-              { i=FNR-1; printf "%s\t%s\t%s\t%d\t%d\t%d\n", $1, $3, $5, run[i], que[i], (run[i]+que[i])*$5 }' \
+  # Join counts onto the cached queue table: cluster key vcpu running queued vcpu_used.
+  # This planner job is running too; it exits right after the upload, so leave it out.
+  awk -F'\t' -v sc="$BK_CLUSTER_ID" -v sq="$SELF_QUEUE" \
+      'NR==FNR { split($0, c, " "); run[c[1]]=c[2]; que[c[1]]=c[3]; next }
+       { i=FNR-1; r=run[i]; if ($2==sc && $3==sq && r>0) r--
+         printf "%s\t%s\t%s\t%d\t%d\t%d\n", $1, $3, $5, r, que[i], (r+que[i])*$5 }' \
     "$WORK/counts.txt" "$WORK/queues.tsv" > "$WORK/usage.tsv"
 
   INFLIGHT_VCPU=$(awk -F'\t' '{s+=$6} END {print s+0}' "$WORK/usage.tsv")
@@ -172,6 +179,8 @@ buildkite-agent meta-data set "adaptive-inflight-vcpu" "$INFLIGHT_VCPU"
   echo "Org in-flight: **${INFLIGHT_VCPU} / ${MAX_VCPU} vCPU** (util **${UTIL}**). Headroom: ${HEADROOM} vCPU = ${FIT} shard(s) of ${TARGET_VCPU} vCPU."
   echo
   echo "Rule: ${RULE}."
+  echo
+  [[ -n $SELF_QUEUE ]] && echo "Counts exclude this planner job on \`${SELF_QUEUE}\`." && echo
   echo
   echo "| Cluster | Queue | vCPU | Running | Queued | vCPU used |"
   echo "|---|---|---|---|---|---|"
