@@ -156,7 +156,9 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 
 ## Test results
 
-All tests used a cap of `MAX_RUNNING=10`, `JOBS_PER_BUILD=2`, and work jobs of `sleep 60`, on a Kubernetes-backed queue able to run 20 jobs at once.
+All tests used a cap of `MAX_RUNNING=10`, `JOBS_PER_BUILD=2`, and work jobs of `sleep 60`. The gate and controller ran on Buildkite hosted agents. The capped queue was either a self-hosted Kubernetes queue (Agent Stack for Kubernetes, able to run 20 jobs at once) or a Buildkite hosted agents queue (Linux, 2 vCPU / 4 GB).
+
+**Self-hosted Kubernetes queue**
 
 | Scenario | Peak running | Peak running + queued | Result |
 |---|---|---|---|
@@ -164,6 +166,13 @@ All tests used a cap of `MAX_RUNNING=10`, `JOBS_PER_BUILD=2`, and work jobs of `
 | A, 10 builds at once, current version | **10** | **10** | Gates released builds one by one at 0, 2, 4, 6, 8 in flight; the 6th waited until capacity freed |
 | B, 10 builds blocked, then controller started | **10** | **10** | Controller released 5 builds in 2 seconds, held the other 5, released them when the first wave finished |
 | B, controller running, 15 builds arriving every 4 seconds | **10** | **10** | Builds admitted as capacity freed, oldest first; all 15 passed in about 4 minutes |
+
+**Buildkite hosted agents queue**
+
+| Scenario | Peak running | Peak running + queued | Result |
+|---|---|---|---|
+| A, 10 builds at once | **10** | **10** | Gates released builds one by one; the 6th waited until capacity freed; all 10 passed in about 3 minutes |
+| B, 10 builds blocked, then controller started | **10** | **10** | Controller released 5 builds at once, held the other 5 until the first wave finished; all 10 passed in about 3 minutes |
 
 Between a job finishing and its replacement running there's a short gap: up to one poll interval, plus agent start-up time. Lower `POLL_SECONDS` to shorten it, at the cost of more API calls.
 
