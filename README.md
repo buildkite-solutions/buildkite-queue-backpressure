@@ -1,8 +1,10 @@
-# Buildkite queue back-pressure
+# Hosted agents back-pressure demo
 
-Keep a Buildkite cluster queue within a capacity limit, either by holding new builds back until the queue has room, or by sizing each build to the room that's free.
+Keep Buildkite hosted agents usage within a limit, either by holding new builds back until there's room, or by sizing each build to the capacity that's free right now.
 
-This is useful when a queue sits in front of something with limited capacity, such as a license pool, a shared test environment, a rate-limited downstream service, or a cost budget, and you want builds to wait in Buildkite rather than pile up downstream.
+This is useful when you want a ceiling on concurrent compute (a cost budget, or headroom kept free for other teams), or when a queue sits in front of something with limited capacity, such as a license pool, a shared test environment or a rate-limited downstream service. Builds wait, or shrink, in Buildkite rather than piling up downstream.
+
+The examples run on Buildkite hosted agents. The same scripts work with self-hosted agents.
 
 ## Approaches
 
@@ -12,29 +14,24 @@ The repo has working examples of each approach, all built on the Buildkite APIs:
 |---|---|---|---|
 | What it controls | When a build starts | When a build starts | How many test shards a build runs |
 | How it works | First step polls the API until there's room | First step is a `block` step; a separate controller pipeline unblocks it | First step reads free capacity and uploads a test step with `parallelism: N` sized to fit |
-| Limit expressed as | Jobs (`MAX_RUNNING`) | Jobs (`MAX_RUNNING`) | vCPU (`MAX_VCPU`) |
+| Limit expressed as | Jobs on one queue (`MAX_RUNNING`) | Jobs on one queue (`MAX_RUNNING`) | vCPU across the whole org (`MAX_VCPU`) |
 | Who decides | Each build's own gate, one at a time | One controller for all builds | Each build's planner, one at a time |
 | Pipelines | 1 | 2 (gated pipeline + controller) | 1 |
-| When the queue is busy | Build waits | Build stays blocked | Build runs with fewer shards; waits only if not even `MIN_SHARDS` fits |
+| When capacity is busy | Build waits | Build stays blocked | Build runs with fewer shards (`MIN_SHARDS` at peak); waits only if not even `MIN_SHARDS` fits |
 | Needs something always running | No | Yes, the controller | No |
 
-All three count jobs the same way, and all three held their limit exactly in testing (see [Test results](#test-results)).
+All three held their limit in testing (see [Test results](#test-results)).
 
 ## How capacity is measured
 
-On every check, the gate (A), controller (B) or planner (C) asks the Buildkite GraphQL API for the target queue's:
+### A and B: one queue
+
+On every check, the gate (A) or controller (B) asks the Buildkite GraphQL API for the target queue's:
 
 - **running jobs**: the higher of `ClusterQueue.metrics.runningJobsCount` and a live count of jobs in state `RUNNING`. The queue metric is reported per time bucket and is only populated if advanced queue metrics are available; if it's missing, the live count is used alone.
 - **queued jobs**: jobs that have been released but aren't running yet (states `SCHEDULED`, `RESERVED`, `ASSIGNED`, `ACCEPTED`). Counting these stops a build that was just released from being missed by the next check.
 
-- **A and B** release a build only if `running + queued + JOBS_PER_BUILD <= MAX_RUNNING`, so the build's own jobs fit under the cap.
-- **C** converts the count to vCPU and sizes the build to what's left:
-
-  ```
-  in-flight vCPU = (running + queued) x QUEUE_VCPU
-  headroom       = MAX_VCPU - in-flight vCPU
-  N              = headroom / QUEUE_VCPU, clamped to MIN_SHARDS..MAX_SHARDS
-  ```
+A build is released only if `running + queued + JOBS_PER_BUILD <= MAX_RUNNING`, so the build's own jobs fit under the cap.
 
 The query, from [`.buildkite/scripts/gate.sh`](.buildkite/scripts/gate.sh):
 
@@ -50,6 +47,47 @@ query GateCheck($queue: ID!, $cluster: ID!, $org: ID!) {
 }
 ```
 
+### C: every queue in the org, in vCPU
+
+Approach C budgets compute across the whole organization, not one queue. A job on any queue in any cluster uses some of the same budget.
+
+**Once per build** (cached for the rest of the run), the planner discovers what to count:
+
+1. Lists every cluster (`GET /v2/organizations/{org}/clusters`), then each cluster's queues (`GET .../clusters/{id}/queues`).
+2. Reads each **hosted** queue's vCPU from its instance shape. The planner prints one raw queue response in its log so you can see the field:
+
+   ```json
+   "hosted_agents": {
+     "instance_shape": { "architecture": "amd64", "cpu": 2, "machine_type": "linux", "memory": 4, "name": "LINUX_AMD64_2X4" }
+   }
+   ```
+
+   It uses `instance_shape.cpu`. If that's missing, it falls back to the number in the shape name (`LINUX_AMD64_16X64` → 16).
+3. **Self-hosted** queues have no instance shape. Give their vCPU in `VCPU_OVERRIDES` (`"key:vcpu key:vcpu"`), or they're skipped and listed as skipped in the log.
+
+**On every check**, it re-queries only the job counts: running and queued (`SCHEDULED`, `RESERVED`, `ASSIGNED`, `ACCEPTED`) for every counted queue. Each queue is two aliased `jobs { count }` fields, batched 20 queues per GraphQL request. It leaves out its own job, since it exits right after uploading. Then:
+
+```
+in-flight vCPU = sum over all counted queues of (running + queued) x queue vCPU
+util           = in-flight vCPU / MAX_VCPU
+FIT            = (MAX_VCPU - in-flight vCPU) / target queue vCPU
+
+if FIT < MIN_SHARDS:     wait POLL_SECONDS and check again (never go over MAX_VCPU)
+elif util >= PEAK_UTIL:  N = MIN_SHARDS
+else:                    N = min(FIT / 2, MAX_SHARDS), at least MIN_SHARDS
+```
+
+Taking half of what fits, rather than all of it, leaves room for the builds right behind this one. At peak, every build drops to the minimum, so many builds can still start without any of them waiting.
+
+**Worked example.** `MAX_VCPU=1584`, three hosted queues of 16, 8 and 4 vCPU, shards going to the 16 vCPU queue, `PEAK_UTIL=0.7`, `MIN_SHARDS=2`, `MAX_SHARDS=32`:
+
+| Jobs in flight (16 / 8 / 4 vCPU queues) | In-flight vCPU | Util | FIT (16 vCPU shards) | N |
+|---|---|---|---|---|
+| 20 / 30 / 40 | 320 + 240 + 160 = 720 | 0.45 | 864 / 16 = 54 | min(27, 32) = **27** |
+| 35 / 40 / 50 | 560 + 320 + 200 = 1080 | 0.68 | 504 / 16 = 31 | min(15, 32) = **15** |
+| 40 / 50 / 61 | 640 + 400 + 244 = 1284 | 0.81 | 300 / 16 = 18 | at peak: **2** |
+| 54 / 60 / 60 | 864 + 480 + 240 = 1584 | 1.00 | 0 | waits |
+
 ## Repository layout
 
 ```
@@ -61,7 +99,7 @@ query GateCheck($queue: ID!, $cluster: ID!, $org: ID!) {
   scripts/
     gate.sh                # A: gate logic
     controller.sh          # B: controller logic
-    adaptive.sh            # C: picks N and uploads the parallel test step
+    adaptive.sh            # C: counts org-wide vCPU, picks N, uploads the parallel test step
 ```
 
 The work in each example is fake. A and B run two `sleep 60` steps on the capped queue. C uploads a test step with `parallelism: N` whose shards each run `sleep $(( 20 + 120 / N ))`: a fixed 20s start-up cost plus an even split of 120s of work. Replace these with your real steps.
@@ -75,7 +113,7 @@ The work in each example is fake. A and B run two `sleep 60` steps on the capped
 - A Buildkite **API access token** ([create one](https://buildkite.com/user/api-access-tokens)):
   - **Organization access**: your organization
   - **GraphQL API access**: enabled
-  - **REST scopes**: `read_builds`, `read_clusters`, plus `write_builds` for approach B (to unblock builds)
+  - **REST scopes**: `read_builds`, `read_clusters` (C lists every cluster and queue), plus `write_builds` for approach B (to unblock builds)
 - That token stored as a [Buildkite secret](https://buildkite.com/docs/pipelines/security/secrets/buildkite-secrets) named `GRAPHQL_API_TOKEN` in the cluster, readable by the pipelines below.
 
 ## Setup
@@ -99,7 +137,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ### 2. Point the pipeline files at your org
 
-In `.buildkite/pipeline.yml`, `.buildkite/pipeline.controller.yml` and `.buildkite/pipeline.adaptive.yml`, update the `env` block:
+In `.buildkite/pipeline.yml` and `.buildkite/pipeline.controller.yml` (A and B), update the `env` block:
 
 ```yaml
 env:
@@ -108,7 +146,9 @@ env:
   BK_QUEUE_ID: "<target queue graphql_id>"
 ```
 
-Then replace `queue: hosted_backpressure` in the work steps (`pipeline.yml`, `pipeline.block.yml`) and `TARGET_QUEUE_KEY` in `pipeline.adaptive.yml` with your target queue's key.
+Then replace `queue: hosted_backpressure` in the work steps (`pipeline.yml`, `pipeline.block.yml`) with your target queue's key.
+
+In `.buildkite/pipeline.adaptive.yml` (C), set `BK_ORG_SLUG`, `BK_CLUSTER_ID` (the cluster the pipeline runs in) and `TARGET_QUEUE_KEY` (the queue in that cluster the shards run on). C finds every other queue itself, so it doesn't need queue IDs.
 
 ### 3. Create the pipelines for your approach
 
@@ -143,7 +183,9 @@ steps:
     command: buildkite-agent pipeline upload .buildkite/pipeline.adaptive.yml
 ```
 
-Set `QUEUE_VCPU` to the vCPU of one agent on the target queue, and `MAX_VCPU` to the budget you want the queue to stay within.
+Set `MAX_VCPU` to the vCPU budget for your whole org, and `MAX_SHARDS` to the most shards a build should ever run. If you use self-hosted agents too, list their queues' vCPU in `VCPU_OVERRIDES` so they count toward the budget.
+
+With [Test Engine test splitting](https://buildkite.com/docs/test-engine/test-splitting), the varying N needs no extra work: the Test Engine client (`bktec`) reads `BUILDKITE_PARALLEL_JOB` and `BUILDKITE_PARALLEL_JOB_COUNT`, which Buildkite sets on each parallel job, so it splits the tests across however many shards the planner chose. Replace the example's `sleep` command with your `bktec run` command.
 
 ## Configuration
 
@@ -156,13 +198,14 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 | `POLL_SECONDS` | A, B, C | `15` (A, C), `10` (B) | Seconds between checks (C only re-checks while waiting for `MIN_SHARDS` to fit) |
 | `TARGET_PIPELINES` | B | example slug | Space-separated slugs of pipelines whose blocked builds the controller manages |
 | `RUN_MINUTES` | B | `30` | How long one controller build runs |
-| `QUEUE_VCPU` | C | `4` | vCPU per job on the target queue. Match your agents' instance size |
-| `MAX_VCPU` | C | `40` | vCPU budget for the target queue |
+| `MAX_VCPU` | C | `20` | vCPU budget across every counted queue in the org |
+| `PEAK_UTIL` | C | `0.7` | At or above this utilization (`in-flight vCPU / MAX_VCPU`), builds get `MIN_SHARDS` |
 | `MIN_SHARDS` | C | `1` | Fewest shards a build runs. If not even this fits, the planner waits |
-| `MAX_SHARDS` | C | `8` | Most shards a build runs, even on an idle queue |
-| `TARGET_QUEUE_KEY` | C | `hosted_backpressure` | Queue key the test step is uploaded to |
+| `MAX_SHARDS` | C | `5` in the example pipeline (`8` in the script) | Most shards a build runs. With `MAX_VCPU=20` and 2 vCPU shards, an idle org fits 10, and half of that is 5 |
+| `TARGET_QUEUE_KEY` | C | `hosted_backpressure` | Queue the shards run on; its vCPU sizes each shard |
+| `VCPU_OVERRIDES` | C | empty | vCPU of self-hosted queues to count, as `"key:vcpu key:vcpu"`. Unlisted self-hosted queues are skipped |
 | `BK_ORG_SLUG`, `BK_CLUSTER_ID` | A, B, C | example values | Your org and cluster (see [Setup](#setup)) |
-| `BK_QUEUE_ID` | A, B, C | example value | Target queue GraphQL ID; can be overridden per build to watch a different queue |
+| `BK_QUEUE_ID` | A, B | example value | Target queue GraphQL ID; can be overridden per build to watch a different queue |
 
 ## Behavior details
 
@@ -178,14 +221,17 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 
 **C. Adaptive parallelism**
 - The planner step uses `concurrency_group` with `concurrency: 1`, so planners across all builds read headroom one at a time. Its shards are queued as soon as it uploads them, so the next planner already counts them.
+- `MAX_VCPU` covers every counted queue, including other teams' pipelines that don't use the planner. Those jobs shrink the headroom, but nothing stops them from starting, so org-wide usage can go over `MAX_VCPU` because of them. The planner never adds shards that would take it over.
 - `MIN_SHARDS` is a floor, but never at the expense of `MAX_VCPU`. If the free headroom can't fit `MIN_SHARDS`, the planner waits and re-checks, like the self-gated approach, rather than going over budget.
 - The shard count is fixed once uploaded. A build that started small stays small even if capacity frees up while it runs.
-- The chosen N is shown in a build annotation and saved as build meta-data (`adaptive-shards`).
+- Each build's annotation shows a per-queue table (cluster, queue, vCPU, running, queued, vCPU used) for every busy queue plus the target, the org total, utilization, which rule applied, and N. N and the in-flight vCPU are also saved as build meta-data (`adaptive-shards`, `adaptive-inflight-vcpu`).
+- Discovery costs one REST call for the cluster list plus one per cluster, at the start of each build; the planner then only re-queries job counts. With 34 hosted queues, each check is two GraphQL requests.
+- Test Engine's client can also choose parallelism itself, from a target run time ([dynamic parallelism](https://buildkite.com/docs/test-engine/bktec/configuring#dynamic-parallelism), `bktec` 2.0+). That sizes a build by how long its tests take; approach C sizes it by how much capacity is free. You could use both and run the smaller of the two.
 
 **All approaches**
 - A, B: if `JOBS_PER_BUILD` is larger than `MAX_RUNNING`, the build is released once the target queue is empty.
 - The limit applies only to builds that go through the gate, controller or planner. Jobs from other pipelines on the same queue count toward in-flight, but nothing stops them from starting. A dedicated target queue keeps the count clean.
-- The queue can never run more jobs than its agents allow. If agent capacity (your hosted agents concurrency, or the size of a self-hosted fleet) is lower than `MAX_RUNNING` (or `MAX_VCPU / QUEUE_VCPU` for C), the agents become the limit and the gate rarely has to wait.
+- The queue can never run more jobs than its agents allow. If agent capacity (your hosted agents concurrency, or the size of a self-hosted fleet) is lower than `MAX_RUNNING` (or `MAX_VCPU` for C), the agents become the limit and the gate rarely has to wait.
 
 ## Test results
 
@@ -203,26 +249,30 @@ Tested with `MAX_RUNNING=10`, `JOBS_PER_BUILD=2` and work jobs of `sleep 60`.
 
 ### C. Adaptive parallelism
 
-Tested with the defaults: `QUEUE_VCPU=4`, `MAX_VCPU=40` (room for 10 shards), `MIN_SHARDS=1`, `MAX_SHARDS=8`. The test queue's agents actually have 2 vCPU; `QUEUE_VCPU=4` was kept so the budget works out to 10 jobs, the same cap as A and B. vCPU figures below are in those budget units.
+Tested with the example pipeline's settings: `MAX_VCPU=20`, `PEAK_UTIL=0.7`, `MIN_SHARDS=1`, `MAX_SHARDS=5`, shards on a 2 vCPU hosted queue. The planner counted 34 hosted queues across 13 clusters and skipped 33 self-hosted ones.
 
-| Scenario | Shards chosen | Peak in-flight vCPU | Result |
+The org is shared, so other people's builds were running too. Throughout testing, another team's job held 4 vCPU on a queue in a different cluster. "Org in-flight" below is everything the planner counted, theirs included.
+
+| Scenario | Org in-flight seen | Shards chosen | Result |
 |---|---|---|---|
-| 1 build on an idle queue | **8** | 32 | Headroom was 40 vCPU (10 shards); clamped to `MAX_SHARDS`. 8 shards of 35s, build took about 1 minute |
-| 5 builds started at once | **8, 2, 8, 8, 2** | **40** | See below. All 5 passed in about 4 minutes |
+| 1 build, nothing else of ours running | 4 vCPU (the other team's job) | **4** | Util 0.20, FIT 8, so 8 / 2 = 4. The other cluster's job cost this build one shard |
+| 1 build, budget raised to `MAX_VCPU=24` to cancel out that job | 4 of 24 vCPU | **5** (`MAX_SHARDS`) | Headroom 20 vCPU, the same as an idle org with `MAX_VCPU=20`. FIT 10, so 10 / 2 = 5 |
+| 5 builds started at once | 4 → 16 vCPU | **4, 2, 1, 2, 1** | N fell as utilization rose. See below |
+| Load on a different queue (`hosted_tester`, 4 × 2 vCPU), then 1 build | 12 vCPU | **2** | The same build got 4 shards without that load |
 
 How the 5-build burst played out, in planner order:
 
-| Build | Planner saw in-flight | Headroom | Shards | Notes |
-|---|---|---|---|---|
-| 1st | 0 vCPU | 40 | 8 | Clamped to `MAX_SHARDS` |
-| 2nd | 32 vCPU | 8 | **2** | Fewer shards: 80s each instead of 35s |
-| 3rd | 40 vCPU | 0 | 8 | Queue full; waited 30s until the 1st build's shards finished (headroom 32) |
-| 4th | 40 vCPU | 0 | 8 | Waited 45s until the queue drained |
-| 5th | 32 vCPU | 8 | **2** | Fewer shards, like the 2nd |
+| Build | Org in-flight seen | Util | FIT | Rule | Shards |
+|---|---|---|---|---|---|
+| 1st | 4 vCPU | 0.20 | 8 | FIT / 2 | **4** |
+| 2nd | 12 vCPU | 0.60 | 4 | FIT / 2 | **2** |
+| 3rd | 16 vCPU | 0.80 | 2 | at peak | **1** |
+| 4th | 10 vCPU | 0.50 | 5 | FIT / 2 | **2** |
+| 5th | 14 vCPU | 0.70 | 3 | at peak | **1** |
 
-In-flight vCPU never went over `MAX_VCPU`: it peaked at exactly 40.
+The 4th build saw less load than the 3rd because the 1st build's shards had just finished. All 5 builds passed in about 4 minutes, and none had to wait.
 
-Later builds get fewer shards whenever they arrive while there's *some* room left. When they arrive to a full queue, they wait for `MIN_SHARDS` to fit; by the time a big build's shards finish, a large block of capacity frees at once, so the next build gets a large N again. Short shards (as here, 35s) make this more pronounced. The trade-off shows in build times: the 2-shard builds' shards ran 80 seconds each instead of 35, but those builds started immediately instead of waiting.
+**Never over budget:** sampling every hosted job in the org every few seconds during the burst, in-flight vCPU peaked at exactly **20** (`MAX_VCPU`), and that includes the planner jobs themselves. In an earlier run, another team's burst of 32 jobs pushed the org to 74 vCPU. The planner doesn't control other pipelines (see [Behavior details](#behavior-details)). It had already chosen its shards against the load at that moment (6 vCPU in flight, 3 shards), so its own shards never took the total over budget.
 
 ### Timing gap
 
@@ -232,4 +282,4 @@ Between a job finishing and its replacement running there's a short gap: up to o
 
 - **A. Self-gated:** start a build, then while its work jobs are running, start another with `MAX_RUNNING=2`. The second gate logs `At capacity, waiting...` until the first build's jobs finish.
 - **B. Block step:** start several builds of the gated pipeline (they'll sit blocked), then start a controller build. Its log shows each unblock decision and the in-flight count.
-- **C. Adaptive parallelism:** start one build on an idle queue (it gets `MAX_SHARDS`), then start another while the first build's shards are running. The second build's annotation shows the smaller headroom and N it chose. To see it wait, set `MAX_VCPU` low, for example `MAX_VCPU=8`.
+- **C. Adaptive parallelism:** start one build and open its annotation: it lists every busy queue in the org and the N chosen. Start a few more while its shards are running and watch N drop to `MIN_SHARDS` once utilization passes `PEAK_UTIL`. To see a build wait, start one with a low budget, for example `MAX_VCPU=4`, while another build's shards are running.
