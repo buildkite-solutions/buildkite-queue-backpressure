@@ -1,0 +1,24 @@
+# C. Adaptive parallelism: instead of waiting, pick how many test shards to run
+# from free vCPU on the target queue right now, then upload a parallel test step.
+# Requires Buildkite secret GRAPHQL_API_TOKEN (API token with GraphQL access).
+
+env:
+  BK_ORG_SLUG: "buildkite-solutions"
+  BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
+  BK_QUEUE_ID: "${BK_QUEUE_ID:-Q2x1c3RlclF1ZXVlLS0tZjAyNjlhMmMtM2ZhYi00YzQ0LWFiMzItNzBkYmI1ZDcyNTQ5}"  # hosted_backpressure
+  TARGET_QUEUE_KEY: "hosted_backpressure"
+  QUEUE_VCPU: "${QUEUE_VCPU:-4}"
+  MAX_VCPU: "${MAX_VCPU:-40}"
+  MIN_SHARDS: "${MIN_SHARDS:-1}"
+  MAX_SHARDS: "${MAX_SHARDS:-8}"
+  POLL_SECONDS: "${POLL_SECONDS:-15}"
+
+steps:
+  - label: ":abacus: Pick shard count from free capacity"
+    key: plan
+    # One planner at a time, org-wide, so two builds never read the same headroom.
+    concurrency_group: "backpressure-adaptive"
+    concurrency: 1
+    secrets:
+      - GRAPHQL_API_TOKEN
+    command: .buildkite/scripts/adaptive.sh
