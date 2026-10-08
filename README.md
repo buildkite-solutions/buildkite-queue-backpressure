@@ -4,12 +4,13 @@ A Buildkite pipeline that keeps the number of running jobs on the `kube_local` q
 
 ## How it works
 
-1. **Gate step** (runs on the cluster default queue, `hosted_linux_small`) polls the Buildkite GraphQL API every `POLL_SECONDS`:
-   - `ClusterQueue.metrics.runningJobsCount` (requires advanced queue metrics)
-   - live count of `RUNNING` command jobs on the queue (`organization.jobs(clusterQueue: ...)`)
+1. **Gate step** (runs on the cluster default queue, `hosted_linux_small`) polls the Buildkite GraphQL API every `POLL_SECONDS` for jobs on `kube_local`:
+   - **running**: the higher of `ClusterQueue.metrics.runningJobsCount` and a live count of `RUNNING` jobs
+   - **queued**: jobs already released but not yet running (`SCHEDULED`, `RESERVED`, `ASSIGNED`, `ACCEPTED`)
 
-   It takes the higher of the two. While it is `>= MAX_RUNNING`, it waits. Once it drops below, the gate finishes. API errors are logged and retried, never failed.
-2. **Work jobs**: two `sleep 60` jobs on `kube_local`, which `depends_on` the gate.
+   It releases when `running + queued + JOBS_PER_BUILD <= MAX_RUNNING`, otherwise it waits. API errors are logged and retried, never failed.
+2. **One gate at a time**: the gate step is in concurrency group `kube-local-back-pressure-gate` with `concurrency: 1`, so the next gate only checks once the previous build's jobs are counted as queued. This makes `MAX_RUNNING` a hard cap even when many builds start at once.
+3. **Work jobs**: two `sleep 60` jobs on `kube_local`, which `depends_on` the gate.
 
 ## Setup
 
@@ -20,12 +21,14 @@ A Buildkite pipeline that keeps the number of running jobs on the `kube_local` q
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `MAX_RUNNING` | `10` | Release the gate when running jobs are below this |
+| `MAX_RUNNING` | `10` | Max in-flight (running + queued) jobs on `kube_local` |
+| `JOBS_PER_BUILD` | `2` | Jobs each build adds to `kube_local` |
 | `POLL_SECONDS` | `15` | Seconds between checks |
 
 Set `MAX_RUNNING=1` on a new build while another build is running to watch the gate wait.
 
-## Limitations
+## Notes
 
-- The gate checks before adding its own jobs, so the queue can briefly reach `MAX_RUNNING - 1 + 2`.
-- Gates that check at the same moment can all release together. Use a `concurrency` group if you need a hard cap.
+- `kube_local` can only run as many jobs as the agent-stack-k8s `max-in-flight` allows (set to 20 in `buildkite-k8s-gitops`, `overlays/kube-local`). Keep it above `MAX_RUNNING` or the gate never needs to wait.
+- If `JOBS_PER_BUILD` is larger than `MAX_RUNNING`, the gate waits for an empty queue, then lets the build through.
+- The cap only covers builds of this pipeline (or anything else using the same gate). Other pipelines targeting `kube_local` still count toward in-flight but aren't held back.
