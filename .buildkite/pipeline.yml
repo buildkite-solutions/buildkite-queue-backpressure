@@ -6,8 +6,8 @@ env:
   BK_ORG_SLUG: "buildkite-solutions"
   BK_CLUSTER_ID: "Q2x1c3Rlci0tLTUzNmM1OWEyLTRjMzctNGYwMi04Y2VmLWUwNDZjNDcwNGZiZQ=="  # Golden Gate Cluster
   BK_QUEUE_ID: "Q2x1c3RlclF1ZXVlLS0tN2JiN2NiMWMtMjcwYi00NTQ4LThiZjMtMDA2ZGU0NDBkYTFm"  # kube_local
-  MAX_RUNNING: "10"
-  POLL_SECONDS: "15"
+  MAX_RUNNING: "${MAX_RUNNING:-10}"    # override per build, e.g. MAX_RUNNING=2
+  POLL_SECONDS: "${POLL_SECONDS:-15}"
 
 steps:
   - label: ":traffic_light: Gate: wait for kube_local capacity"
