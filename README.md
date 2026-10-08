@@ -2,24 +2,26 @@
 
 Cap how many jobs run at once on a Buildkite cluster queue by holding new builds back until the queue has room.
 
-This is useful when a queue sits in front of something with limited capacity, such as a Kubernetes cluster, a license pool, a shared test environment, or a rate-limited downstream service, and you want builds to wait in Buildkite rather than pile up downstream.
+This is useful when a queue sits in front of something with limited capacity, such as a license pool, a shared test environment, a rate-limited downstream service, or a cost budget, and you want builds to wait in Buildkite rather than pile up downstream.
 
-The repo has two working approaches, both built on the Buildkite APIs:
+## Approaches
 
-| | A. Polling gate | B. Block step + capacity controller |
+The repo has working examples of each approach, all built on the Buildkite APIs:
+
+| | A. Self-gated | B. Block step |
 |---|---|---|
-| How a build waits | Its first step polls the API until there's room | Its first step is a `block` step; a separate controller unblocks it |
-| Who decides | Each build's gate, one at a time | One controller for all builds |
+| How a build waits | Its first step polls the API until there's room | Its first step is a `block` step; a separate controller pipeline unblocks it |
+| Who decides | Each build's own gate, one at a time | One controller for all builds |
 | Pipelines | 1 | 2 (gated pipeline + controller) |
 | Visible in the UI as | A running gate step | A blocked build (can be unblocked by hand to skip the queue) |
-| Release speed under a burst | One build every few seconds (each gate job must start) | Several builds per poll |
+| Release speed under a burst | One build every few seconds (each gate job must start) | Several builds per check |
 | Needs something always running | No | Yes, the controller |
 
-Both approaches count jobs the same way and both hold the cap exactly in testing (see [Test results](#test-results)).
+Both count jobs the same way and both held the cap exactly in testing (see [Test results](#test-results)).
 
 ## How capacity is measured
 
-On every check, the gate or controller asks the Buildkite GraphQL API for the target queue's:
+On every check, the gate (A) or controller (B) asks the Buildkite GraphQL API for the target queue's:
 
 - **running jobs**: the higher of `ClusterQueue.metrics.runningJobsCount` and a live count of jobs in state `RUNNING`. The queue metric is reported per time bucket and is only populated if advanced queue metrics are available; if it's missing, the live count is used alone.
 - **queued jobs**: jobs that have been released but aren't running yet (states `SCHEDULED`, `RESERVED`, `ASSIGNED`, `ACCEPTED`). Counting these stops a build that was just released from being missed by the next check.
@@ -44,22 +46,22 @@ query GateCheck($queue: ID!, $cluster: ID!, $org: ID!) {
 
 ```
 .buildkite/
-  pipeline.yml             # A: polling gate + 2 work jobs
-  pipeline.block.yml       # B: block step + 2 work jobs
-  pipeline.controller.yml  # B: capacity controller
+  pipeline.yml             # A. Self-gated: gate + 2 work jobs
+  pipeline.block.yml       # B. Block step: block step + 2 work jobs
+  pipeline.controller.yml  # B. Block step: capacity controller
   scripts/
     gate.sh                # A: gate logic
     controller.sh          # B: controller logic
 ```
 
-The work jobs in both demos are two `sleep 60` steps on the capped queue. Replace them with your real steps.
+The work jobs in each example are two `sleep 60` steps on the capped queue. Replace them with your real steps.
 
 ## Prerequisites
 
 - A Buildkite organization using **clusters**, with:
-  - the queue you want to cap (called the *target queue* below), and
-  - a queue for the gate/controller jobs. They're lightweight (bash, `curl`, `jq`) and should **not** run on the target queue, or they'd take up the capacity they're managing. In the demo they use the cluster's default queue.
-- Agents for the gate/controller need `bash`, `curl` and `jq`. If `jq` is missing, the scripts install it with `apt-get` (Debian/Ubuntu with `sudo`).
+  - the queue you want to cap (the *target queue*). The examples use a Buildkite hosted agents queue, `hosted_backpressure`; any cluster queue works, hosted or self-hosted.
+  - a separate queue for the gate/controller jobs. They're lightweight (bash, `curl`, `jq`) and must **not** run on the target queue, or they'd count toward and take up the capacity they're managing. The examples use the cluster's default hosted queue.
+- Agents for the gate/controller need `bash`, `curl` and `jq`. If `jq` is missing, the scripts install it with `apt-get` (Debian/Ubuntu with `sudo`). Buildkite hosted Linux agents work as-is.
 - A Buildkite **API access token** ([create one](https://buildkite.com/user/api-access-tokens)):
   - **Organization access**: your organization
   - **GraphQL API access**: enabled
@@ -98,9 +100,11 @@ env:
 
 Then replace `queue: hosted_backpressure` in the work steps (`pipeline.yml`, `pipeline.block.yml`) with your target queue's key.
 
-### 3a. Approach A: polling gate
+### 3. Create the pipelines for your approach
 
-Create one pipeline from this repo, in your cluster, with these steps:
+Create each pipeline from this repo, in your cluster. Each pipeline's steps (in the pipeline settings) are a single upload step pointing at its file.
+
+**A. Self-gated:** one pipeline.
 
 ```yaml
 steps:
@@ -110,11 +114,9 @@ steps:
 
 Every build runs the gate first; the work jobs start once the gate releases.
 
-### 3b. Approach B: block step + capacity controller
+**B. Block step:** two pipelines.
 
-Create two pipelines from this repo, in your cluster:
-
-| Pipeline | Steps |
+| Pipeline | Upload command |
 |---|---|
 | Gated pipeline | `buildkite-agent pipeline upload .buildkite/pipeline.block.yml` |
 | Controller | `buildkite-agent pipeline upload .buildkite/pipeline.controller.yml` |
@@ -132,51 +134,41 @@ Set these in the pipeline YAML `env` block. Values written as `${VAR:-default}` 
 | `MAX_RUNNING` | A, B | `10` | Max in-flight (running + queued) jobs on the target queue |
 | `JOBS_PER_BUILD` | A, B | `2` | Jobs each build adds to the target queue. Keep in step with your work steps |
 | `POLL_SECONDS` | A, B | `15` (A), `10` (B) | Seconds between checks |
-| `TARGET_PIPELINES` | B | demo slug | Space-separated slugs of pipelines whose blocked builds the controller manages |
+| `TARGET_PIPELINES` | B | example slug | Space-separated slugs of pipelines whose blocked builds the controller manages |
 | `RUN_MINUTES` | B | `30` | How long one controller build runs |
-| `BK_ORG_SLUG`, `BK_CLUSTER_ID` | A, B | demo values | Your org and cluster (see [Setup](#setup)) |
-| `BK_QUEUE_ID` | A, B | demo value | Target queue GraphQL ID; can be overridden per build to watch a different queue |
+| `BK_ORG_SLUG`, `BK_CLUSTER_ID` | A, B | example values | Your org and cluster (see [Setup](#setup)) |
+| `BK_QUEUE_ID` | A, B | example value | Target queue GraphQL ID; can be overridden per build to watch a different queue |
 
 ## Behavior details
 
-**Approach A: polling gate**
+**A. Self-gated**
 - The gate step uses `concurrency_group` with `concurrency: 1`, so gates across all builds check one at a time. Without this, gates that check at the same moment all see the same free capacity and release together. In testing, that overshot a cap of 10 to 16.
 - API errors are logged and retried; the gate never fails because of them. It also has no timeout, so add `timeout_in_minutes` to the gate step if you want waiting builds to give up eventually.
 
-**Approach B: block step + capacity controller**
+**B. Block step**
 - Blocked builds are released oldest first (by build creation time) across all `TARGET_PIPELINES`.
 - Within one check, the controller releases as many builds as fit, counting each one's `JOBS_PER_BUILD` as it goes.
 - Unblocking a build by hand still works and lets it skip the queue. The controller sees its jobs on the next check.
 - If the controller isn't running, builds stay blocked until it is (or until someone unblocks them).
 
-**Both**
+**All approaches**
 - If `JOBS_PER_BUILD` is larger than `MAX_RUNNING`, the build is released once the target queue is empty.
-- The cap holds back only builds that go through the gate or controller. Jobs from other pipelines on the same queue count toward in-flight, but nothing stops them from starting.
-- The queue can never run more jobs than its agents allow. If agent capacity (for example the Agent Stack for Kubernetes `max-in-flight` setting) is lower than `MAX_RUNNING`, the agents become the limit and the gate rarely has to wait.
+- The cap holds back only builds that go through the gate or controller. Jobs from other pipelines on the same queue count toward in-flight, but nothing stops them from starting. A dedicated target queue keeps the count clean.
+- The queue can never run more jobs than its agents allow. If agent capacity (your hosted agents concurrency, or the size of a self-hosted fleet) is lower than `MAX_RUNNING`, the agents become the limit and the gate rarely has to wait.
 
 ## Test results
 
-All tests used a cap of `MAX_RUNNING=10`, `JOBS_PER_BUILD=2`, and work jobs of `sleep 60`. The gate and controller ran on Buildkite hosted agents. The capped queue was either a self-hosted Kubernetes queue (Agent Stack for Kubernetes, able to run 20 jobs at once) or a Buildkite hosted agents queue (Linux, 2 vCPU / 4 GB).
+Tested with `MAX_RUNNING=10`, `JOBS_PER_BUILD=2` and work jobs of `sleep 60`. The target queue was a Buildkite hosted agents queue (Linux, 2 vCPU / 4 GB); the gate and controller ran on a separate hosted queue. No jobs were held back by hosted agents concurrency limits.
 
-**Self-hosted Kubernetes queue**
-
-| Scenario | Peak running | Peak running + queued | Result |
-|---|---|---|---|
-| A, 10 builds at once, gates **not** serialized (earlier version) | 16 | 16 | Cap exceeded: gates checked at the same moment |
-| A, 10 builds at once, current version | **10** | **10** | Gates released builds one by one at 0, 2, 4, 6, 8 in flight; the 6th waited until capacity freed |
-| B, 10 builds blocked, then controller started | **10** | **10** | Controller released 5 builds in 2 seconds, held the other 5, released them when the first wave finished |
-| B, controller running, 15 builds arriving every 4 seconds | **10** | **10** | Builds admitted as capacity freed, oldest first; all 15 passed in about 4 minutes |
-
-**Buildkite hosted agents queue**
-
-| Scenario | Peak running | Peak running + queued | Result |
-|---|---|---|---|
-| A, 10 builds at once | **10** | **10** | Gates released builds one by one; the 6th waited until capacity freed; all 10 passed in about 3 minutes |
-| B, 10 builds blocked, then controller started | **10** | **10** | Controller released 5 builds at once, held the other 5 until the first wave finished; all 10 passed in about 3 minutes |
+| Approach | Scenario | Peak running | Peak running + queued | Result |
+|---|---|---|---|---|
+| A. Self-gated | 10 builds started at once | **10** | **10** | Gates released builds one by one at 0, 2, 4, 6, 8 in flight; the 6th waited until capacity freed. All 10 passed in about 3 minutes |
+| B. Block step | 10 builds blocked, then controller started | **10** | **10** | Controller released 5 builds at once, held the other 5 until the first wave finished. All 10 passed in about 3 minutes |
+| B. Block step | Controller running, 15 builds arriving every 4 seconds | **10** | **10** | Builds admitted as capacity freed, oldest first. All 15 passed in about 4 minutes |
 
 Between a job finishing and its replacement running there's a short gap: up to one poll interval, plus agent start-up time. Lower `POLL_SECONDS` to shorten it, at the cost of more API calls.
 
 ## Try it
 
-- **Watch a build wait (A):** start a build, then while its work jobs are running, start another with `MAX_RUNNING=2`. The second gate logs `At capacity, waiting...` until the first build's jobs finish.
-- **Watch the controller (B):** start several builds of the gated pipeline (they'll sit blocked), then start a controller build. Its log shows each unblock decision and the in-flight count.
+- **A. Self-gated:** start a build, then while its work jobs are running, start another with `MAX_RUNNING=2`. The second gate logs `At capacity, waiting...` until the first build's jobs finish.
+- **B. Block step:** start several builds of the gated pipeline (they'll sit blocked), then start a controller build. Its log shows each unblock decision and the in-flight count.
